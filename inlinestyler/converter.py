@@ -4,12 +4,11 @@ import urllib
 import codecs
 import urlparse
 import csv
-import cssutils
+import tinycss
 
 from lxml import etree
-from cssutils.script import csscombine
-from cssutils.script import CSSCapture
-from cssselect import CSSSelector, ExpressionError
+from inlinestyler_cssselect import CSSSelector
+from cssselect import parse, HTMLTranslator, ExpressionError
 
 class Conversion:
     def __init__(self):
@@ -49,10 +48,10 @@ class Conversion:
 
         #set inline style attribute if not one of the elements not worth styling
         ignoreList=['html','head','title','meta','link','script']
-        for element, style in styledict.items():
+        for element, styles in styledict.items():
             if element.tag not in ignoreList:
-                v = style.getCssText(separator=u'')
-                element.set('style', v)
+                inlineStyle = ';'.join([key + ":" + value[0] for key,value in styles.items()]) + ';'
+                element.set('style', inlineStyle)
 
         #convert tree back to plain text html
         self.convertedHTML = etree.tostring(document, method="xml", pretty_print=True,encoding='UTF-8')
@@ -64,11 +63,12 @@ class Conversion:
         """
           returns css.CSSStyleDeclaration of inline styles, for html: @style
           """
+        parser = tinycss.make_parser('page3')
         cssText = element.get('style')
         if cssText:
-            return cssutils.css.CSSStyleDeclaration(cssText=cssText)
+            return parser.parse_style_attr(cssText)
         else:
-            return None
+            return []
 
     def getView(self, document, css):
 
@@ -91,36 +91,37 @@ class Conversion:
         clientCount-=1
 
         #sheet = csscombine(path="http://www.torchbox.com/css/front/import.css")
-        sheet = cssutils.parseString(css)
+        parser = tinycss.make_parser('page3')
+        sheet = parser.parse_stylesheet(unicode(css))
 
-        rules = (rule for rule in sheet if rule.type == rule.STYLE_RULE)
+        rules = (rule for rule in sheet.rules if not rule.at_keyword)
         for rule in rules:
-
-            for selector in rule.selectorList:
+            selectors = parse(rule.selector.as_css())
+            for selector in selectors:
                 try:
-                    cssselector = CSSSelector(selector.selectorText)
-                    matching = cssselector.evaluate(document)
+                    xpath_string = HTMLTranslator().selector_to_xpath(selector)
+                    matching = etree.XPath(xpath_string)(document)
 
                     for element in matching:
                         # add styles for all matching DOM elements
                         if element not in view:
                             # add initial
-                            view[element] = cssutils.css.CSSStyleDeclaration()
+                            view[element] = {}
                             specificities[element] = {}
 
                             # add inline style if present
                             inlinestyletext= element.get('style')
                             if inlinestyletext:
-                                inlinestyle= cssutils.css.CSSStyleDeclaration(cssText=inlinestyletext)
+                                inlinestyle=parser.parse_style_attr(inlinestyletext)
                             else:
                                 inlinestyle = None
                             if inlinestyle:
                                 for p in inlinestyle:
                                     # set inline style specificity
-                                    view[element].setProperty(p)
+                                    view[element][p.name] = (p.value.as_css(), p.priority)
                                     specificities[element][p.name] = (1,0,0,0)
 
-                        for p in rule.style:
+                        for p in rule.declarations:
                             #create supportratio dic item for this property
                             if p.name not in supportratios:
                                 supportratios[p.name]={'usage':0,'failedClients':0}
@@ -148,14 +149,15 @@ class Conversion:
                                 pass
 
                             # update styles
-                            if p not in view[element]:
-                                view[element].setProperty(p.name, p.value, p.priority)
-                                specificities[element][p.name] = selector.specificity
+                            specificity = (0,) + selector.specificity()[:3]
+                            if p.name not in view[element]:
+                                view[element][p.name] = (p.value.as_css(), p.priority)
+                                specificities[element][p.name] = specificity
                             else:
-                                sameprio = (p.priority == view[element].getPropertyPriority(p.name))
-                                if not sameprio and bool(p.priority) or (sameprio and selector.specificity >= specificities[element][p.name]):
+                                sameprio = (p.priority == view[element][p.name][1])
+                                if not sameprio and bool(p.priority) or (sameprio and specificity >= specificities[element][p.name]):
                                     # later, more specific or higher prio
-                                    view[element].setProperty(p.name, p.value, p.priority)
+                                    view[element][p.name] = (p.value.as_css(), p.priority)
 
                 except ExpressionError:
                     if str(sys.exc_info()[1]) not in self.CSSErrors:
