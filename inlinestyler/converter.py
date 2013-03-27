@@ -1,3 +1,4 @@
+from collections import namedtuple
 import os
 import sys
 import urllib
@@ -7,8 +8,10 @@ import csv
 import tinycss
 
 from lxml import etree
-from inlinestyler_cssselect import CSSSelector
+from inlinestyler.inlinestyler_cssselect import CSSSelector
 from cssselect import parse, HTMLTranslator, ExpressionError
+
+stylevalue = namedtuple('InlineStyle', 'content priority')
 
 class Conversion:
     def __init__(self):
@@ -50,7 +53,7 @@ class Conversion:
         ignoreList=['html','head','title','meta','link','script']
         for element, styles in styledict.items():
             if element.tag not in ignoreList:
-                inlineStyle = ';'.join([key + ":" + value[0] for key,value in styles.items()]) + ';'
+                inlineStyle = ';'.join([prop + ":" + value.content for prop, value in styles.items()])
                 element.set('style', inlineStyle)
 
         #convert tree back to plain text html
@@ -112,13 +115,13 @@ class Conversion:
                             # add inline style if present
                             inlinestyletext= element.get('style')
                             if inlinestyletext:
-                                inlinestyle=parser.parse_style_attr(inlinestyletext)
+                                inlinestyle, _=parser.parse_style_attr(inlinestyletext)
                             else:
                                 inlinestyle = None
                             if inlinestyle:
                                 for p in inlinestyle:
                                     # set inline style specificity
-                                    view[element][p.name] = (p.value.as_css(), p.priority)
+                                    view[element][p.name] = stylevalue(p.value.as_css(), p.priority)
                                     specificities[element][p.name] = (1,0,0,0)
 
                         for p in rule.declarations:
@@ -151,13 +154,13 @@ class Conversion:
                             # update styles
                             specificity = (0,) + selector.specificity()[:3]
                             if p.name not in view[element]:
-                                view[element][p.name] = (p.value.as_css(), p.priority)
+                                view[element][p.name] = stylevalue(p.value.as_css(), p.priority)
                                 specificities[element][p.name] = specificity
                             else:
                                 sameprio = (p.priority == view[element][p.name][1])
                                 if not sameprio and bool(p.priority) or (sameprio and specificity >= specificities[element][p.name]):
                                     # later, more specific or higher prio
-                                    view[element][p.name] = (p.value.as_css(), p.priority)
+                                    view[element][p.name] = stylevalue(p.value.as_css(), p.priority)
 
                 except ExpressionError:
                     if str(sys.exc_info()[1]) not in self.CSSErrors:
